@@ -7,6 +7,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
+model Familia {
+  id        String    @id @default(cuid())
+  nombre    String    @unique
+  facturas  Factura[]
+  createdAt DateTime  @default(now())
+}
+
 model Comercio {
   id       String    @id @default(cuid())
   nombre   String    @unique
@@ -23,6 +30,8 @@ model Producto {
 
 model Factura {
   id          String        @id @default(cuid())
+  familiaId   String?
+  familia     Familia?      @relation(fields: [familiaId], references: [id], onDelete: Cascade)
   comercioId  String
   comercio    Comercio      @relation(fields: [comercioId], references: [id])
   fechaCompra DateTime

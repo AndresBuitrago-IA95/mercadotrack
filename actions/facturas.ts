@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getActiveFamilia } from "@/actions/familias";
 
 export interface InvoiceItemInput {
   descripcionOriginal: string;
@@ -14,6 +15,7 @@ export interface InvoiceItemInput {
 }
 
 export interface InvoiceInputData {
+  familiaId?: string;
   comercio: string;
   fechaCompra: string | Date;
   total: number;
@@ -27,6 +29,12 @@ export async function saveInvoice(data: InvoiceInputData) {
       typeof data.fechaCompra === "string"
         ? new Date(data.fechaCompra)
         : data.fechaCompra;
+
+    let targetFamiliaId = data.familiaId;
+    if (!targetFamiliaId) {
+      const activeFamilia = await getActiveFamilia();
+      targetFamiliaId = activeFamilia?.id;
+    }
 
     const savedInvoice = await prisma.$transaction(async (tx) => {
       // 1. Comercio: Buscar insensible a mayúsculas o crear
@@ -43,9 +51,10 @@ export async function saveInvoice(data: InvoiceInputData) {
         });
       }
 
-      // 2. Factura: Crear registro inicial vinculado al comercio
+      // 2. Factura: Crear registro inicial vinculado al comercio y familia
       const factura = await tx.factura.create({
         data: {
+          familiaId: targetFamiliaId || null,
           comercioId: comercio.id,
           fechaCompra: isNaN(purchaseDate.getTime()) ? new Date() : purchaseDate,
           total: Number(data.total) || 0,

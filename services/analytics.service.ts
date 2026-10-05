@@ -222,16 +222,20 @@ export async function getStoreComparison(
   return comparison.sort((a, b) => a.precioMinimo - b.precioMinimo);
 }
 
-export async function getDashboardSummary(): Promise<DashboardSummary> {
+export async function getDashboardSummary(familiaId?: string): Promise<DashboardSummary> {
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
+  const whereFamilia = familiaId ? { familiaId } : {};
+
   // 1. Facturas
-  const totalFacturas = await prisma.factura.count();
-  const totalProductos = await prisma.producto.count();
+  const totalFacturas = await prisma.factura.count({
+    where: whereFamilia,
+  });
 
   const facturasMes = await prisma.factura.findMany({
     where: {
+      ...whereFamilia,
       fechaCompra: {
         gte: startOfMonth,
       },
@@ -240,6 +244,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   });
 
   const todasFacturas = await prisma.factura.findMany({
+    where: whereFamilia,
     select: { total: true },
   });
 
@@ -248,6 +253,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
 
   // 2. Última factura
   const lastInvoice = await prisma.factura.findFirst({
+    where: whereFamilia,
     orderBy: { fechaCompra: "desc" },
     include: {
       comercio: true,
@@ -261,6 +267,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
 
   // 3. Gastos por categoría
   const allItems = await prisma.itemFactura.findMany({
+    where: familiaId ? { factura: { familiaId } } : {},
     include: {
       producto: true,
     },
@@ -303,6 +310,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
           productoId: it.productoId,
           factura: {
             comercioId: { not: lastInvoice.comercioId },
+            ...(familiaId ? { familiaId } : {}),
           },
         },
         include: {
@@ -341,11 +349,35 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
 
   oportunidadesAhorro.sort((a, b) => b.ahorroPorcentaje - a.ahorroPorcentaje);
 
-  // 6. Productos recientes
+  // 6. Productos rastreados
+  const totalProductos = await prisma.producto.count(
+    familiaId
+      ? {
+          where: {
+            items: {
+              some: {
+                factura: { familiaId },
+              },
+            },
+          },
+        }
+      : undefined
+  );
+
   const productosList = await prisma.producto.findMany({
+    where: familiaId
+      ? {
+          items: {
+            some: {
+              factura: { familiaId },
+            },
+          },
+        }
+      : undefined,
     take: 8,
     include: {
       items: {
+        where: familiaId ? { factura: { familiaId } } : undefined,
         orderBy: {
           factura: {
             fechaCompra: "desc",

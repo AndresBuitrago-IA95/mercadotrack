@@ -2,6 +2,8 @@ import React from "react";
 import Link from "next/link";
 import { Plus, Camera, ShoppingCart, Tag, ChevronRight, Store, ArrowUpRight } from "lucide-react";
 import { getDashboardSummary } from "@/services/analytics.service";
+import { getFamilias, getActiveFamilia } from "@/actions/familias";
+import { FamilySelector } from "@/components/FamilySelector";
 import { MetricCards } from "@/components/analytics/MetricCards";
 import { PriceAlerts } from "@/components/analytics/PriceAlerts";
 import { SavingsOpportunities } from "@/components/analytics/SavingsOpportunities";
@@ -10,7 +12,12 @@ import { CategoryBreakdown } from "@/components/analytics/CategoryBreakdown";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const summary = await getDashboardSummary();
+  const [familias, activeFamilia] = await Promise.all([
+    getFamilias(),
+    getActiveFamilia(),
+  ]);
+
+  const summary = await getDashboardSummary(activeFamilia?.id);
 
   const hasData = summary.totalFacturas > 0;
 
@@ -18,7 +25,7 @@ export default async function DashboardPage() {
     <main className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 pb-24">
       {/* Top Navigation */}
       <header className="sticky top-0 z-30 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white font-black shadow-xs">
               M
@@ -33,12 +40,19 @@ export default async function DashboardPage() {
             </div>
           </div>
 
-          <Link
-            href="/nueva-compra"
-            className="hidden sm:inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-xs transition-colors"
-          >
-            <Camera className="w-4 h-4" /> Escanear Tirilla
-          </Link>
+          <div className="flex items-center gap-2">
+            <FamilySelector
+              familias={familias}
+              activeFamilia={activeFamilia}
+            />
+
+            <Link
+              href="/nueva-compra"
+              className="hidden sm:inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-xs transition-colors"
+            >
+              <Camera className="w-4 h-4" /> Escanear Tirilla
+            </Link>
+          </div>
         </div>
       </header>
 
