@@ -43,6 +43,44 @@ export interface CategoryExpense {
   cantidadItems: number;
 }
 
+export interface MonthlyExpense {
+  mesKey: string; // "2026-10"
+  mesLabel: string; // "Octubre 2026"
+  total: number;
+  facturasCount: number;
+  ticketPromedio: number;
+  variacionPorcentaje?: number;
+  diferenciaMonto?: number;
+}
+
+export interface WeeklyExpense {
+  semanaKey: string; // "2026-W40"
+  semanaNumero: number;
+  rangoLabel: string; // "28 Sep - 04 Oct"
+  total: number;
+  facturasCount: number;
+  ticketPromedio: number;
+}
+
+export interface WeeklyComparison {
+  semanaActual: WeeklyExpense | null;
+  semanaAnterior: WeeklyExpense | null;
+  variacionPorcentaje: number;
+  diferenciaMonto: number;
+  desgloseSemanas: WeeklyExpense[];
+}
+
+export interface StoreRankItem {
+  comercioId: string;
+  comercioNombre: string;
+  totalGastado: number;
+  totalFacturas: number;
+  productosUnicos: number;
+  precioPromedioUnitario: number;
+  esMasBarato: boolean;
+  ahorroEstimadoVsPromedio?: number;
+}
+
 export interface DashboardSummary {
   gastoTotalMes: number;
   gastoTotalGeneral: number;
@@ -56,10 +94,14 @@ export interface DashboardSummary {
     itemsCount: number;
   } | null;
   gastosPorCategoria: CategoryExpense[];
+  gastosMesAMes: MonthlyExpense[];
+  comparacionSemanal: WeeklyComparison;
   variaciones: {
     subieron: PriceVariationItem[];
     bajaron: PriceVariationItem[];
+    alzasHistoricas: PriceVariationItem[];
   };
+  rankingSupermercados: StoreRankItem[];
   oportunidadesAhorro: SavingsOpportunity[];
   productosRecientes: Array<{
     id: string;
@@ -68,15 +110,40 @@ export interface DashboardSummary {
     unidadMedida: string;
     ultimoPrecio: number;
     ultimoComercio: string;
+    mejorComercio: string;
+    mejorPrecio: number;
   }>;
 }
 
-export async function getPriceVariations(lastInvoiceId: string): Promise<{
-  subieron: PriceVariationItem[];
-  bajaron: PriceVariationItem[];
-}> {
-  const currentInvoice = await prisma.factura.findUnique({
-    where: { id: lastInvoiceId },
+// Helpers para semanas del año y formateo
+function getWeekNumber(d: Date): number {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+}
+
+function getWeekRangeLabel(dateInWeek: Date): string {
+  const curr = new Date(dateInWeek);
+  const day = curr.getDay();
+  const diffToMonday = curr.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(curr.setDate(diffToMonday));
+  const sunday = new Date(curr.setDate(monday.getDate() + 6));
+
+  const formatShort = (d: Date) =>
+    d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+
+  return `${formatShort(monday)} - ${formatShort(sunday)}`;
+}
+
+export async function getDashboardSummary(familiaId?: string): Promise<DashboardSummary> {
+  const whereFamilia = familiaId ? { familiaId } : {};
+
+  // 1. Obtener todas las facturas ordenadas por fecha
+  const facturas = await prisma.factura.findMany({
+    where: whereFamilia,
+    orderBy: { fechaCompra: "desc" },
     include: {
       comercio: true,
       items: {
@@ -87,65 +154,180 @@ export async function getPriceVariations(lastInvoiceId: string): Promise<{
     },
   });
 
-  if (!currentInvoice) {
-    return { subieron: [], bajaron: [] };
+  const totalFacturas = facturas.length;
+  const gastoTotalGeneral = facturas.reduce((acc, f) => acc + (f.total || 0), 0);
+
+  // 2. Facturas del mes en curso o más reciente
+  const now = new Date();
+  const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  let mesReferencia = startOfCurrentMonth;
+  if (facturas.length > 0 && facturas[0].fechaCompra < startOfCurrentMonth) {
+    const fLatest = facturas[0].fechaCompra;
+    mesReferencia = new Date(fLatest.getFullYear(), fLatest.getMonth(), 1);
   }
 
+  const facturasMes = facturas.filter((f) => f.fechaCompra >= mesReferencia);
+  const gastoTotalMes = facturasMes.reduce((acc, f) => acc + (f.total || 0), 0);
+
+  // 3. Desglose y suma Mes a Mes
+  const monthlyMap = new Map<string, { total: number; count: number; date: Date }>();
+  for (const f of facturas) {
+    const d = new Date(f.fechaCompra);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (!monthlyMap.has(key)) {
+      monthlyMap.set(key, { total: 0, count: 0, date: d });
+    }
+    const curr = monthlyMap.get(key)!;
+    curr.total += f.total;
+    curr.count += 1;
+  }
+
+  const sortedMonthKeys = Array.from(monthlyMap.keys()).sort().reverse();
+  const gastosMesAMes: MonthlyExpense[] = [];
+
+  for (let i = 0; i < sortedMonthKeys.length; i++) {
+    const key = sortedMonthKeys[i];
+    const data = monthlyMap.get(key)!;
+    const prevKey = sortedMonthKeys[i + 1];
+    let variacionPct: number | undefined;
+    let difMonto: number | undefined;
+
+    if (prevKey && monthlyMap.has(prevKey)) {
+      const prevData = monthlyMap.get(prevKey)!;
+      if (prevData.total > 0) {
+        difMonto = Number((data.total - prevData.total).toFixed(2));
+        variacionPct = Number(((difMonto / prevData.total) * 100).toFixed(1));
+      }
+    }
+
+    const monthName = data.date.toLocaleDateString("es-ES", {
+      month: "long",
+      year: "numeric",
+    });
+
+    gastosMesAMes.push({
+      mesKey: key,
+      mesLabel: monthName.charAt(0).toUpperCase() + monthName.slice(1),
+      total: Number(data.total.toFixed(2)),
+      facturasCount: data.count,
+      ticketPromedio: Number((data.total / data.count).toFixed(2)),
+      variacionPorcentaje: variacionPct,
+      diferenciaMonto: difMonto,
+    });
+  }
+
+  // 4. Comparación y desglose Semana a Semana
+  const weeklyMap = new Map<string, { total: number; count: number; date: Date; weekNum: number }>();
+  for (const f of facturas) {
+    const d = new Date(f.fechaCompra);
+    const weekNum = getWeekNumber(d);
+    const key = `${d.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+    if (!weeklyMap.has(key)) {
+      weeklyMap.set(key, { total: 0, count: 0, date: d, weekNum });
+    }
+    const curr = weeklyMap.get(key)!;
+    curr.total += f.total;
+    curr.count += 1;
+  }
+
+  const sortedWeekKeys = Array.from(weeklyMap.keys()).sort().reverse();
+  const desgloseSemanas: WeeklyExpense[] = sortedWeekKeys.map((k) => {
+    const item = weeklyMap.get(k)!;
+    return {
+      semanaKey: k,
+      semanaNumero: item.weekNum,
+      rangoLabel: getWeekRangeLabel(item.date),
+      total: Number(item.total.toFixed(2)),
+      facturasCount: item.count,
+      ticketPromedio: Number((item.total / item.count).toFixed(2)),
+    };
+  });
+
+  const semanaActual = desgloseSemanas[0] || null;
+  const semanaAnterior = desgloseSemanas[1] || null;
+  let varSemanalPct = 0;
+  let difSemanalMonto = 0;
+
+  if (semanaActual && semanaAnterior && semanaAnterior.total > 0) {
+    difSemanalMonto = Number((semanaActual.total - semanaAnterior.total).toFixed(2));
+    varSemanalPct = Number(((difSemanalMonto / semanaAnterior.total) * 100).toFixed(1));
+  }
+
+  const comparacionSemanal: WeeklyComparison = {
+    semanaActual,
+    semanaAnterior,
+    variacionPorcentaje: varSemanalPct,
+    diferenciaMonto: difSemanalMonto,
+    desgloseSemanas,
+  };
+
+  // 5. Variaciones de precio (Última compra vs Anteriores) y Alzas Históricas
+  const lastInvoice = facturas[0] || null;
   const subieron: PriceVariationItem[] = [];
   const bajaron: PriceVariationItem[] = [];
 
-  for (const item of currentInvoice.items) {
-    const prevItem = await prisma.itemFactura.findFirst({
-      where: {
-        productoId: item.productoId,
-        factura: {
-          fechaCompra: {
-            lt: currentInvoice.fechaCompra,
-          },
-          id: {
-            not: currentInvoice.id,
-          },
-        },
-      },
-      orderBy: {
-        factura: {
-          fechaCompra: "desc",
-        },
-      },
-      include: {
-        factura: {
-          include: {
-            comercio: true,
-          },
-        },
-      },
-    });
+  const productHistoryMap = new Map<
+    string,
+    Array<{
+      facturaId: string;
+      fechaCompra: Date;
+      precioUnitario: number;
+      comercioNombre: string;
+    }>
+  >();
 
-    if (prevItem && prevItem.precioUnitario > 0) {
-      const delta =
-        ((item.precioUnitario - prevItem.precioUnitario) /
-          prevItem.precioUnitario) *
-        100;
-      const diff = item.precioUnitario - prevItem.precioUnitario;
+  for (const f of facturas) {
+    for (const it of f.items) {
+      if (!productHistoryMap.has(it.productoId)) {
+        productHistoryMap.set(it.productoId, []);
+      }
+      productHistoryMap.get(it.productoId)!.push({
+        facturaId: f.id,
+        fechaCompra: f.fechaCompra,
+        precioUnitario: it.precioUnitario,
+        comercioNombre: f.comercio.nombre,
+      });
+    }
+  }
 
-      const variation: PriceVariationItem = {
-        productoId: item.productoId,
-        nombre: item.producto.nombreCanonico,
-        categoria: item.producto.categoria,
-        unidadMedida: item.producto.unidadMedida,
-        precioActual: item.precioUnitario,
-        precioAnterior: prevItem.precioUnitario,
-        deltaPorcentaje: Number(delta.toFixed(1)),
-        diferenciaMonto: Number(diff.toFixed(2)),
-        comercioActual: currentInvoice.comercio.nombre,
-        comercioAnterior: prevItem.factura.comercio.nombre,
-        fechaAnterior: prevItem.factura.fechaCompra,
-      };
+  for (const list of productHistoryMap.values()) {
+    list.sort((a, b) => b.fechaCompra.getTime() - a.fechaCompra.getTime());
+  }
 
-      if (delta > 0.05) {
-        subieron.push(variation);
-      } else if (delta < -0.05) {
-        bajaron.push(variation);
+  if (lastInvoice) {
+    for (const item of lastInvoice.items) {
+      const history = productHistoryMap.get(item.productoId) || [];
+      const prev = history.find(
+        (h) =>
+          h.fechaCompra < lastInvoice.fechaCompra && h.facturaId !== lastInvoice.id
+      );
+
+      if (prev && prev.precioUnitario > 0) {
+        const delta =
+          ((item.precioUnitario - prev.precioUnitario) / prev.precioUnitario) *
+          100;
+        const diff = item.precioUnitario - prev.precioUnitario;
+
+        const variation: PriceVariationItem = {
+          productoId: item.productoId,
+          nombre: item.producto.nombreCanonico,
+          categoria: item.producto.categoria,
+          unidadMedida: item.producto.unidadMedida,
+          precioActual: item.precioUnitario,
+          precioAnterior: prev.precioUnitario,
+          deltaPorcentaje: Number(delta.toFixed(1)),
+          diferenciaMonto: Number(diff.toFixed(2)),
+          comercioActual: lastInvoice.comercio.nombre,
+          comercioAnterior: prev.comercioNombre,
+          fechaAnterior: prev.fechaCompra,
+        };
+
+        if (delta > 0.05) {
+          subieron.push(variation);
+        } else if (delta < -0.05) {
+          bajaron.push(variation);
+        }
       }
     }
   }
@@ -153,12 +335,271 @@ export async function getPriceVariations(lastInvoiceId: string): Promise<{
   subieron.sort((a, b) => b.deltaPorcentaje - a.deltaPorcentaje);
   bajaron.sort((a, b) => a.deltaPorcentaje - b.deltaPorcentaje);
 
-  return { subieron, bajaron };
+  // Alzas históricas globales
+  const alzasHistoricas: PriceVariationItem[] = [];
+  for (const [prodId, history] of productHistoryMap.entries()) {
+    if (history.length > 1) {
+      const latest = history[0];
+      const oldest = history[history.length - 1];
+
+      if (latest.precioUnitario > oldest.precioUnitario && oldest.precioUnitario > 0) {
+        const delta =
+          ((latest.precioUnitario - oldest.precioUnitario) / oldest.precioUnitario) *
+          100;
+        const diff = latest.precioUnitario - oldest.precioUnitario;
+
+        let prodInfo = null;
+        for (const f of facturas) {
+          const it = f.items.find((i) => i.productoId === prodId);
+          if (it) {
+            prodInfo = it.producto;
+            break;
+          }
+        }
+
+        if (prodInfo && delta > 0.1) {
+          alzasHistoricas.push({
+            productoId: prodId,
+            nombre: prodInfo.nombreCanonico,
+            categoria: prodInfo.categoria,
+            unidadMedida: prodInfo.unidadMedida,
+            precioActual: latest.precioUnitario,
+            precioAnterior: oldest.precioUnitario,
+            deltaPorcentaje: Number(delta.toFixed(1)),
+            diferenciaMonto: Number(diff.toFixed(2)),
+            comercioActual: latest.comercioNombre,
+            comercioAnterior: oldest.comercioNombre,
+            fechaAnterior: oldest.fechaCompra,
+          });
+        }
+      }
+    }
+  }
+
+  alzasHistoricas.sort((a, b) => b.deltaPorcentaje - a.deltaPorcentaje);
+
+  // 6. Ranking y Comparativa de Supermercados
+  const storeMap = new Map<
+    string,
+    {
+      comercioNombre: string;
+      totalGastado: number;
+      facturasCount: number;
+      unitPrices: number[];
+      productosSet: Set<string>;
+    }
+  >();
+
+  for (const f of facturas) {
+    if (!storeMap.has(f.comercioId)) {
+      storeMap.set(f.comercioId, {
+        comercioNombre: f.comercio.nombre,
+        totalGastado: 0,
+        facturasCount: 0,
+        unitPrices: [],
+        productosSet: new Set(),
+      });
+    }
+    const store = storeMap.get(f.comercioId)!;
+    store.totalGastado += f.total;
+    store.facturasCount += 1;
+
+    for (const it of f.items) {
+      store.unitPrices.push(it.precioUnitario);
+      store.productosSet.add(it.productoId);
+    }
+  }
+
+  const rankingSupermercados: StoreRankItem[] = [];
+  for (const [comercioId, s] of storeMap.entries()) {
+    const avgPrice =
+      s.unitPrices.length > 0
+        ? s.unitPrices.reduce((a, b) => a + b, 0) / s.unitPrices.length
+        : 0;
+
+    rankingSupermercados.push({
+      comercioId,
+      comercioNombre: s.comercioNombre,
+      totalGastado: Number(s.totalGastado.toFixed(2)),
+      totalFacturas: s.facturasCount,
+      productosUnicos: s.productosSet.size,
+      precioPromedioUnitario: Number(avgPrice.toFixed(2)),
+      esMasBarato: false,
+    });
+  }
+
+  rankingSupermercados.sort(
+    (a, b) => a.precioPromedioUnitario - b.precioPromedioUnitario
+  );
+  if (rankingSupermercados.length > 0) {
+    rankingSupermercados[0].esMasBarato = true;
+  }
+
+  // 7. Gastos por Categoría
+  const categoryTotals: Record<string, { total: number; count: number }> = {};
+  let overallItemSum = 0;
+
+  for (const f of facturas) {
+    for (const it of f.items) {
+      const cat = it.producto.categoria || "General";
+      if (!categoryTotals[cat]) {
+        categoryTotals[cat] = { total: 0, count: 0 };
+      }
+      categoryTotals[cat].total += it.precioTotal;
+      categoryTotals[cat].count += 1;
+      overallItemSum += it.precioTotal;
+    }
+  }
+
+  const gastosPorCategoria: CategoryExpense[] = Object.entries(categoryTotals)
+    .map(([categoria, data]) => ({
+      categoria,
+      monto: Number(data.total.toFixed(2)),
+      porcentaje:
+        overallItemSum > 0
+          ? Number(((data.total / overallItemSum) * 100).toFixed(1))
+          : 0,
+      cantidadItems: data.count,
+    }))
+    .sort((a, b) => b.monto - a.monto);
+
+  // 8. Oportunidades de Ahorro y Productos con Mejor Supermercado
+  const oportunidadesAhorro: SavingsOpportunity[] = [];
+  const productCheapestMap = new Map<
+    string,
+    { comercioNombre: string; precioMinimo: number }
+  >();
+
+  for (const [prodId, history] of productHistoryMap.entries()) {
+    let minPrice = Infinity;
+    let minStore = "";
+    for (const h of history) {
+      if (h.precioUnitario < minPrice) {
+        minPrice = h.precioUnitario;
+        minStore = h.comercioNombre;
+      }
+    }
+    if (minPrice < Infinity) {
+      productCheapestMap.set(prodId, {
+        comercioNombre: minStore,
+        precioMinimo: minPrice,
+      });
+    }
+  }
+
+  if (lastInvoice) {
+    for (const it of lastInvoice.items) {
+      const cheapest = productCheapestMap.get(it.productoId);
+      if (cheapest && it.precioUnitario > cheapest.precioMinimo) {
+        const savingMonto = it.precioUnitario - cheapest.precioMinimo;
+        const savingPct = (savingMonto / it.precioUnitario) * 100;
+
+        oportunidadesAhorro.push({
+          productoId: it.productoId,
+          nombre: it.producto.nombreCanonico,
+          categoria: it.producto.categoria,
+          precioActual: it.precioUnitario,
+          comercioActual: lastInvoice.comercio.nombre,
+          precioMinimoHistorico: cheapest.precioMinimo,
+          comercioMinimo: cheapest.comercioNombre,
+          ahorroMonto: Number(savingMonto.toFixed(2)),
+          ahorroPorcentaje: Number(savingPct.toFixed(1)),
+        });
+      }
+    }
+  }
+
+  oportunidadesAhorro.sort((a, b) => b.ahorroPorcentaje - a.ahorroPorcentaje);
+
+  // 9. Productos Recientes con Mejor Comercio
+  const allProducts = await prisma.producto.findMany({
+    where: familiaId
+      ? {
+          items: {
+            some: {
+              factura: { familiaId },
+            },
+          },
+        }
+      : undefined,
+    take: 12,
+    include: {
+      items: {
+        where: familiaId ? { factura: { familiaId } } : undefined,
+        orderBy: {
+          factura: {
+            fechaCompra: "desc",
+          },
+        },
+        take: 1,
+        include: {
+          factura: {
+            include: {
+              comercio: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const totalProductos = await prisma.producto.count(
+    familiaId
+      ? {
+          where: {
+            items: {
+              some: {
+                factura: { familiaId },
+              },
+            },
+          },
+        }
+      : undefined
+  );
+
+  const productosRecientes = allProducts.map((p) => {
+    const cheapest = productCheapestMap.get(p.id);
+    return {
+      id: p.id,
+      nombreCanonico: p.nombreCanonico,
+      categoria: p.categoria,
+      unidadMedida: p.unidadMedida,
+      ultimoPrecio: p.items[0]?.precioUnitario || 0,
+      ultimoComercio: p.items[0]?.factura.comercio.nombre || "N/A",
+      mejorComercio: cheapest?.comercioNombre || p.items[0]?.factura.comercio.nombre || "N/A",
+      mejorPrecio: cheapest?.precioMinimo || p.items[0]?.precioUnitario || 0,
+    };
+  });
+
+  return {
+    gastoTotalMes: Number(gastoTotalMes.toFixed(2)),
+    gastoTotalGeneral: Number(gastoTotalGeneral.toFixed(2)),
+    totalFacturas,
+    totalProductos,
+    ultimaFactura: lastInvoice
+      ? {
+          id: lastInvoice.id,
+          comercio: lastInvoice.comercio.nombre,
+          fechaCompra: lastInvoice.fechaCompra,
+          total: lastInvoice.total,
+          itemsCount: lastInvoice.items.length,
+        }
+      : null,
+    gastosPorCategoria,
+    gastosMesAMes,
+    comparacionSemanal,
+    variaciones: {
+      subieron,
+      bajaron,
+      alzasHistoricas,
+    },
+    rankingSupermercados,
+    oportunidadesAhorro,
+    productosRecientes,
+  };
 }
 
-export async function getStoreComparison(
-  productoId: string
-): Promise<StoreComparison[]> {
+export async function getStoreComparison(productoId: string): Promise<StoreComparison[]> {
   const items = await prisma.itemFactura.findMany({
     where: { productoId },
     include: {
@@ -220,209 +661,6 @@ export async function getStoreComparison(
   }
 
   return comparison.sort((a, b) => a.precioMinimo - b.precioMinimo);
-}
-
-export async function getDashboardSummary(familiaId?: string): Promise<DashboardSummary> {
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-  const whereFamilia = familiaId ? { familiaId } : {};
-
-  // 1. Facturas
-  const totalFacturas = await prisma.factura.count({
-    where: whereFamilia,
-  });
-
-  const facturasMes = await prisma.factura.findMany({
-    where: {
-      ...whereFamilia,
-      fechaCompra: {
-        gte: startOfMonth,
-      },
-    },
-    select: { total: true },
-  });
-
-  const todasFacturas = await prisma.factura.findMany({
-    where: whereFamilia,
-    select: { total: true },
-  });
-
-  const gastoTotalMes = facturasMes.reduce((acc, f) => acc + f.total, 0);
-  const gastoTotalGeneral = todasFacturas.reduce((acc, f) => acc + f.total, 0);
-
-  // 2. Última factura
-  const lastInvoice = await prisma.factura.findFirst({
-    where: whereFamilia,
-    orderBy: { fechaCompra: "desc" },
-    include: {
-      comercio: true,
-      items: {
-        include: {
-          producto: true,
-        },
-      },
-    },
-  });
-
-  // 3. Gastos por categoría
-  const allItems = await prisma.itemFactura.findMany({
-    where: familiaId ? { factura: { familiaId } } : {},
-    include: {
-      producto: true,
-    },
-  });
-
-  const categoryTotals: Record<string, { total: number; count: number }> = {};
-  let overallItemSum = 0;
-
-  for (const it of allItems) {
-    const cat = it.producto.categoria || "General";
-    if (!categoryTotals[cat]) {
-      categoryTotals[cat] = { total: 0, count: 0 };
-    }
-    categoryTotals[cat].total += it.precioTotal;
-    categoryTotals[cat].count += 1;
-    overallItemSum += it.precioTotal;
-  }
-
-  const gastosPorCategoria: CategoryExpense[] = Object.entries(categoryTotals)
-    .map(([categoria, data]) => ({
-      categoria,
-      monto: Number(data.total.toFixed(2)),
-      porcentaje: overallItemSum > 0 ? Number(((data.total / overallItemSum) * 100).toFixed(1)) : 0,
-      cantidadItems: data.count,
-    }))
-    .sort((a, b) => b.monto - a.monto);
-
-  // 4. Variaciones de precio en la última factura
-  const variaciones = lastInvoice
-    ? await getPriceVariations(lastInvoice.id)
-    : { subieron: [], bajaron: [] };
-
-  // 5. Oportunidades de ahorro
-  const oportunidadesAhorro: SavingsOpportunity[] = [];
-  if (lastInvoice) {
-    for (const it of lastInvoice.items) {
-      // Find historical min price for this product in OTHER stores
-      const otherStoreItems = await prisma.itemFactura.findMany({
-        where: {
-          productoId: it.productoId,
-          factura: {
-            comercioId: { not: lastInvoice.comercioId },
-            ...(familiaId ? { familiaId } : {}),
-          },
-        },
-        include: {
-          factura: {
-            include: {
-              comercio: true,
-            },
-          },
-        },
-        orderBy: {
-          precioUnitario: "asc",
-        },
-      });
-
-      if (otherStoreItems.length > 0) {
-        const cheapest = otherStoreItems[0];
-        if (it.precioUnitario > cheapest.precioUnitario) {
-          const savingMonto = it.precioUnitario - cheapest.precioUnitario;
-          const savingPct = (savingMonto / it.precioUnitario) * 100;
-
-          oportunidadesAhorro.push({
-            productoId: it.productoId,
-            nombre: it.producto.nombreCanonico,
-            categoria: it.producto.categoria,
-            precioActual: it.precioUnitario,
-            comercioActual: lastInvoice.comercio.nombre,
-            precioMinimoHistorico: cheapest.precioUnitario,
-            comercioMinimo: cheapest.factura.comercio.nombre,
-            ahorroMonto: Number(savingMonto.toFixed(2)),
-            ahorroPorcentaje: Number(savingPct.toFixed(1)),
-          });
-        }
-      }
-    }
-  }
-
-  oportunidadesAhorro.sort((a, b) => b.ahorroPorcentaje - a.ahorroPorcentaje);
-
-  // 6. Productos rastreados
-  const totalProductos = await prisma.producto.count(
-    familiaId
-      ? {
-          where: {
-            items: {
-              some: {
-                factura: { familiaId },
-              },
-            },
-          },
-        }
-      : undefined
-  );
-
-  const productosList = await prisma.producto.findMany({
-    where: familiaId
-      ? {
-          items: {
-            some: {
-              factura: { familiaId },
-            },
-          },
-        }
-      : undefined,
-    take: 8,
-    include: {
-      items: {
-        where: familiaId ? { factura: { familiaId } } : undefined,
-        orderBy: {
-          factura: {
-            fechaCompra: "desc",
-          },
-        },
-        take: 1,
-        include: {
-          factura: {
-            include: {
-              comercio: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  const productosRecientes = productosList.map((p) => ({
-    id: p.id,
-    nombreCanonico: p.nombreCanonico,
-    categoria: p.categoria,
-    unidadMedida: p.unidadMedida,
-    ultimoPrecio: p.items[0]?.precioUnitario || 0,
-    ultimoComercio: p.items[0]?.factura.comercio.nombre || "N/A",
-  }));
-
-  return {
-    gastoTotalMes: Number(gastoTotalMes.toFixed(2)),
-    gastoTotalGeneral: Number(gastoTotalGeneral.toFixed(2)),
-    totalFacturas,
-    totalProductos,
-    ultimaFactura: lastInvoice
-      ? {
-          id: lastInvoice.id,
-          comercio: lastInvoice.comercio.nombre,
-          fechaCompra: lastInvoice.fechaCompra,
-          total: lastInvoice.total,
-          itemsCount: lastInvoice.items.length,
-        }
-      : null,
-    gastosPorCategoria,
-    variaciones,
-    oportunidadesAhorro,
-    productosRecientes,
-  };
 }
 
 export async function getProductDetail(productoId: string) {

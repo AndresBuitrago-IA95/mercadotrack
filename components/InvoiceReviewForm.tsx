@@ -34,13 +34,22 @@ export function InvoiceReviewForm({
   onCancel,
   isSaving = false,
 }: InvoiceReviewFormProps) {
-  const [comercio, setComercio] = useState(initialData.comercio || "");
+  const [comercio, setComercio] = useState(
+    initialData.comercio ? initialData.comercio.trim() : ""
+  );
   const [fechaCompra, setFechaCompra] = useState(
     initialData.fechaCompra
       ? new Date(initialData.fechaCompra).toISOString().split("T")[0]
       : new Date().toISOString().split("T")[0]
   );
-  const [total, setTotal] = useState<number>(Number(initialData.total) || 0);
+  const [total, setTotal] = useState<number>(() => {
+    const initTotal = Number(initialData.total) || 0;
+    if (initTotal > 0) return initTotal;
+    return (initialData.items || []).reduce(
+      (acc, item) => acc + (Number(item.precioTotal) || 0),
+      0
+    );
+  });
   const [items, setItems] = useState<InvoiceItemInput[]>(
     (initialData.items || []).map((item) => ({
       descripcionOriginal: item.descripcionOriginal || item.nombreCanonico,

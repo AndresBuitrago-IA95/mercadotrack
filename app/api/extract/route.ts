@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractInvoiceFromImage } from "@/lib/gemini";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,7 +36,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const data = await extractInvoiceFromImage(base64Image, mimeType);
+    // Obtener catálogo existente para sugerir nombres canónicos consistentes
+    const existingProducts = await prisma.producto.findMany({
+      select: { nombreCanonico: true },
+      take: 120,
+      orderBy: { nombreCanonico: "asc" },
+    });
+    const catalogNames = existingProducts.map((p) => p.nombreCanonico);
+
+    const data = await extractInvoiceFromImage(base64Image, mimeType, catalogNames);
     return NextResponse.json({ success: true, data });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Error al procesar la imagen";

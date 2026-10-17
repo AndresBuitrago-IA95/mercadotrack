@@ -89,7 +89,8 @@ const invoiceResponseSchema: Schema = {
 
 export async function extractInvoiceFromImage(
   base64Image: string,
-  mimeType: string = "image/jpeg"
+  mimeType: string = "image/jpeg",
+  knownCatalogProducts: string[] = []
 ): Promise<ExtractedInvoice> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -101,14 +102,34 @@ export async function extractInvoiceFromImage(
     ? base64Image.split(",")[1]
     : base64Image;
 
+  // Modelos ordenados por disponibilidad y capacidad comprobada
   const modelsToTry = [
-    "gemini-flash-lite-latest",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash-lite",
-    "gemini-flash-latest",
     "gemini-3.8-flash",
+    "gemini-flash-latest",
   ];
   let lastError: unknown = null;
+
+  const catalogContext =
+    knownCatalogProducts.length > 0
+      ? `\n\nCatálogo de productos ya registrados en el sistema (si algún ítem del ticket corresponde a uno de estos, utiliza EXACTAMENTE este nombre canónico):\n- ${knownCatalogProducts.slice(0, 80).join("\n- ")}`
+      : "";
+
+  const systemInstruction = `Eres un sistema OCR experto de máxima precisión especializado en tirillas, tiquetes de caja y facturas de supermercados (especialmente de Colombia y Latinoamérica: Tiendas D1, Éxito, Carulla, Olímpica, Jumbo, Tiendas Ara, Euro, Makro, etc.).
+
+INSTRUCCIONES CLAVE DE EXTRACCIÓN:
+1. COMERCIO: Detecta el nombre comercial conocido de la cadena (ejemplo: 'Tiendas D1' o 'D1' en lugar de razones sociales legales como 'PLAN B INVESTMENTS S.A.S' o 'KOBA COLOMBIA', 'Éxito' en lugar de 'ALMACENES ÉXITO S.A.', 'Carulla', 'Jumbo' en lugar de 'CENCOSUD', 'Olímpica', 'Tiendas Ara', etc.).
+2. FECHA DE COMPRA: Extrae la fecha real del tiquete en formato YYYY-MM-DD. Si no hay año visible, asume el año actual.
+3. PRECIOS Y MONEDA:
+   - En tiquetes de Colombia/Latinoamérica, el punto '.' o espacio suele ser separador de miles (ej: 13.450 es 13450, 3.190 es 3190, NO 13.45 o 3.19).
+   - Devuelve todos los precios como números enteros o decimales reales (ej: 13450, 3190).
+   - PRECIO TOTAL: Es el valor neto efectivamente cobrado por ese renglón en la tirilla.
+   - DESCUENTO: Si la tirilla muestra rebajas, descuentos automáticos o ahorro por ítem ('DTO', 'DESC', 'AHORRO', 'PROMO'), indica el monto positivo del descuento (0 si no aplica).
+4. PRODUCTOS Y NOMBRES CANÓNICOS:
+   - Limpia los códigos PLU o números de referencia internos del inicio o final (ej: '0002595 NUTRION GATOS 1500 G' -> nombre canónico: 'Nutrion Gatos 1500g').
+   - Normaliza el nombre del producto de forma clara, legible y estándar en español con mayúsculas iniciales.
+   - Especifica la categoría lógica (Lácteos, Carnes y Pescados, Frutas y Verduras, Abarrotes, Limpieza y Hogar, Bebidas, Snacks y Dulces, Mascotas, Cuidado Personal, etc.).
+   - Unidad de medida estándar: 'un', 'kg', 'g', 'l', 'ml', 'paquete', 'docena'.
+5. TOTAL DE LA FACTURA: Debe ser el valor final total a pagar registrado en el ticket (sumatoria total pagada).${catalogContext}`;
 
   for (const model of modelsToTry) {
     try {
@@ -125,14 +146,13 @@ export async function extractInvoiceFromImage(
                 },
               },
               {
-                text: "Extrae de manera estricta y estructurada todos los datos de esta tirilla o factura de compra.",
+                text: "Extrae de manera rigurosa, completa y estructurada todos los datos y cada uno de los productos de esta tirilla de supermercado, garantizando que los precios numéricos y nombres canónicos sean exactos.",
               },
             ],
           },
         ],
         config: {
-          systemInstruction:
-            "Eres un sistema OCR especializado en tirillas y facturas de supermercado. Extrae con precisión el nombre del comercio, la fecha de compra (ISO/YYYY-MM-DD), el total de la compra y cada ítem desglosado con su descripción original, nombre canónico estandarizado, categoría, unidad de medida, cantidad, precio unitario, precio total cobrado y el valor del descuento o rebaja aplicada al producto si la tirilla indica 'DTO', 'DESC', 'AHORRO', promociones o precios rebajados (coloca 0 si no tiene descuento).",
+          systemInstruction,
           temperature: 0.1,
           responseMimeType: "application/json",
           responseSchema: invoiceResponseSchema,
@@ -141,7 +161,19 @@ export async function extractInvoiceFromImage(
 
       const text = response.text;
       if (text) {
-        return JSON.parse(text) as ExtractedInvoice;
+        const parsed = JSON.parse(text) as ExtractedInvoice;
+        // Sanitizar posibles números con formato de coma o string
+        if (parsed.items && Array.isArray(parsed.items)) {
+          parsed.items = parsed.items.map((item) => ({
+            ...item,
+            cantidad: Number(item.cantidad) || 1,
+            precioUnitario: Number(item.precioUnitario) || 0,
+            precioTotal: Number(item.precioTotal) || 0,
+            descuento: Number(item.descuento) || 0,
+          }));
+        }
+        parsed.total = Number(parsed.total) || 0;
+        return parsed;
       }
     } catch (err) {
       lastError = err;

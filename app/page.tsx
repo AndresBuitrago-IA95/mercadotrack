@@ -1,11 +1,13 @@
 import React from "react";
 import Link from "next/link";
-import { Plus, Camera, ShoppingCart, Tag, ChevronRight, Store, ArrowUpRight } from "lucide-react";
+import { Camera, ShoppingCart, Tag, Store, ShieldCheck } from "lucide-react";
 import { getDashboardSummary } from "@/services/analytics.service";
 import { getFamilias, getActiveFamilia } from "@/actions/familias";
 import { FamilySelector } from "@/components/FamilySelector";
 import { MetricCards } from "@/components/analytics/MetricCards";
+import { SpendingTrends } from "@/components/analytics/SpendingTrends";
 import { PriceAlerts } from "@/components/analytics/PriceAlerts";
+import { StoreComparisonRanking } from "@/components/analytics/StoreComparisonRanking";
 import { SavingsOpportunities } from "@/components/analytics/SavingsOpportunities";
 import { CategoryBreakdown } from "@/components/analytics/CategoryBreakdown";
 
@@ -77,62 +79,96 @@ export default async function DashboardPage() {
           </div>
         ) : (
           <>
-            {/* KPI Cards */}
+            {/* KPI Cards con suma total y semana vs semana */}
             <MetricCards
+              gastoTotalGeneral={summary.gastoTotalGeneral}
               gastoTotalMes={summary.gastoTotalMes}
               totalFacturas={summary.totalFacturas}
               totalProductos={summary.totalProductos}
+              comparacionSemanal={summary.comparacionSemanal}
+              mesActual={summary.gastosMesAMes[0]}
+              productosSubieronCount={summary.variaciones.subieron.length}
               ultimaFactura={summary.ultimaFactura}
             />
 
-            {/* Smart Savings Opportunities */}
+            {/* Evolución de Gasto: Comparativa Semana a Semana & Suma Mes a Mes */}
+            <SpendingTrends
+              comparacionSemanal={summary.comparacionSemanal}
+              gastosMesAMes={summary.gastosMesAMes}
+              gastoTotalGeneral={summary.gastoTotalGeneral}
+            />
+
+            {/* Ranking de Supermercados: ¿En cuál es más barato? */}
+            <StoreComparisonRanking ranking={summary.rankingSupermercados} />
+
+            {/* Oportunidades de Ahorro Detectadas */}
             <SavingsOpportunities oportunidades={summary.oportunidadesAhorro} />
 
-            {/* Price Alerts & Category Breakdown Grid */}
+            {/* Alertas de Variación e Inflación (Subieron / Bajaron / Históricas) & Gastos por Categoría */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <PriceAlerts
                 subieron={summary.variaciones.subieron}
                 bajaron={summary.variaciones.bajaron}
+                alzasHistoricas={summary.variaciones.alzasHistoricas}
               />
               <CategoryBreakdown categorias={summary.gastosPorCategoria} />
             </div>
 
-            {/* Tracked Products Quick List */}
+            {/* Productos en Seguimiento con Mejor Comercio */}
             <div className="bg-white dark:bg-zinc-900 rounded-2xl p-5 border border-zinc-200 dark:border-zinc-800 shadow-xs space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-emerald-500" />
-                  Productos en Seguimiento
-                </h3>
-                <span className="text-xs text-zinc-500">
-                  {summary.totalProductos} productos
-                </span>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-emerald-500" />
+                    Productos en Seguimiento & Mejor Supermercado
+                  </h3>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+                    Precios actuales y el supermercado donde se registró el mejor valor
+                  </p>
+                </div>
+                <Link
+                  href="/productos"
+                  className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline"
+                >
+                  Ver todos ({summary.totalProductos})
+                </Link>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                 {summary.productosRecientes.map((p) => (
                   <Link
                     key={p.id}
                     href={`/productos/${p.id}`}
-                    className="group p-3 rounded-xl border border-zinc-100 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-800/20 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all flex flex-col justify-between"
+                    className="group p-3.5 rounded-xl border border-zinc-100 dark:border-zinc-800/80 bg-zinc-50/50 dark:bg-zinc-800/20 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all flex flex-col justify-between"
                   >
                     <div>
-                      <span className="text-[10px] font-semibold uppercase text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md">
-                        {p.categoria}
-                      </span>
-                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-1.5 line-clamp-1 group-hover:text-emerald-600 transition-colors">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[9px] font-bold uppercase text-emerald-700 dark:text-emerald-400 bg-emerald-100/70 dark:bg-emerald-950/80 px-2 py-0.5 rounded-md">
+                          {p.categoria}
+                        </span>
+                        <span className="text-[10px] text-zinc-400">{p.unidadMedida}</span>
+                      </div>
+                      <p className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mt-2 line-clamp-2 group-hover:text-emerald-600 transition-colors">
                         {p.nombreCanonico}
                       </p>
                     </div>
 
-                    <div className="mt-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-xs">
-                      <span className="font-extrabold text-zinc-900 dark:text-zinc-100">
-                        ${p.ultimoPrecio.toLocaleString()}
-                      </span>
-                      <span className="text-[10px] text-zinc-400 flex items-center gap-0.5">
-                        <Store className="w-2.5 h-2.5" />
-                        {p.ultimoComercio}
-                      </span>
+                    <div className="mt-3 pt-2.5 border-t border-zinc-100 dark:border-zinc-800 space-y-1 text-xs">
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-[10px] text-zinc-400">Último precio:</span>
+                        <span className="font-extrabold text-zinc-900 dark:text-zinc-100">
+                          ${p.ultimoPrecio.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-emerald-600 dark:text-emerald-400">
+                        <span className="flex items-center gap-0.5">
+                          <ShieldCheck className="w-3 h-3" />
+                          Mejor en:
+                        </span>
+                        <span className="font-bold truncate max-w-[120px]">
+                          {p.mejorComercio} (${p.mejorPrecio.toLocaleString()})
+                        </span>
+                      </div>
                     </div>
                   </Link>
                 ))}
