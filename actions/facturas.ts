@@ -27,7 +27,16 @@ function normalizeStoreName(rawName: string): string {
   const cleaned = rawName.trim();
   const upper = cleaned.toUpperCase();
 
-  if (upper.includes("PLAN B INVESTMENTS") || upper.includes("KOBA COLOMBIA") || upper.includes("TIENDAS D1") || upper === "D1") {
+  // PLAN B INVESTMENTS S.A.S es la razón social de Tiendas Ísimo
+  if (
+    upper.includes("PLAN B INVESTMENTS") ||
+    upper.includes("PLAN B") ||
+    upper.includes("ISIMO") ||
+    upper.includes("ÍSIMO")
+  ) {
+    return "Tiendas Ísimo";
+  }
+  if (upper.includes("KOBA COLOMBIA") || upper.includes("TIENDAS D1") || upper === "D1") {
     return "Tiendas D1";
   }
   if (upper.includes("ALMACENES EXITO") || upper.includes("EXITO")) {
@@ -215,9 +224,13 @@ export async function saveInvoice(data: InvoiceInputData) {
 
         const cantidad = Number(item.cantidad) || 1.0;
         const precioUnitario = Number(item.precioUnitario) || 0;
-        const precioTotal =
-          Number(item.precioTotal) || cantidad * precioUnitario;
         const descuento = Number(item.descuento) || 0.0;
+        const expectedNeto = Math.max(0, cantidad * precioUnitario - descuento);
+        const precioTotal =
+          Number(item.precioTotal) > 0 &&
+          Math.abs(Number(item.precioTotal) - cantidad * precioUnitario) > 0.01
+            ? Number(item.precioTotal)
+            : expectedNeto;
 
         await tx.itemFactura.create({
           data: {
